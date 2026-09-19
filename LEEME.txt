@@ -38,6 +38,17 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: se siente como app nativa en iPhone/Android
+-----------------------------------------------------------
+- Se puede "instalar" de verdad: en iPhone, Safari → compartir →
+  "Agregar a inicio". Abre a pantalla completa, sin la barra de
+  Safari, con su propio ícono (el orb cyan/magenta).
+- Respeta el notch y la barra inferior (home indicator): el header
+  y la caja de mensaje ya no quedan tapados ni pegados al borde.
+- Manifest + iconos en static/, mas un service worker minimo (no
+  cachea el chat, solo existe para que cuente como instalable en
+  Android/Chrome tambien).
+
 Novedades: personalidad, adjuntos, PDFs y acceso
 ---------------------------------------------------
 - Español neutro por defecto (ya no "vos" ni modismos regionales), y

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from flask import (
     Flask, request, jsonify, session, render_template, render_template_string,
-    Response, stream_with_context, make_response, redirect, url_for,
+    Response, stream_with_context, make_response, redirect, url_for, send_from_directory,
 )
 
 
@@ -735,11 +735,18 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/sw.js")
+def service_worker():
+    # se sirve desde la raiz (no desde /static/sw.js) para que su alcance
+    # ("scope") cubra toda la app y no solo la carpeta static.
+    return send_from_directory(app.static_folder, "sw.js", mimetype="application/javascript")
+
+
 # --- Puerta de acceso opcional ---
 # Si ACCESS_PASSWORD esta seteada, nadie entra sin ponerla primero. Si no
 # esta seteada (como venia por defecto), la app queda abierta igual que
 # antes: no rompe nada para quien no la necesite.
-_RUTAS_SIN_LOGIN = {"entrar", "health", "static"}
+_RUTAS_SIN_LOGIN = {"entrar", "health", "static", "service_worker"}
 
 _LOGIN_HTML = """
 <!doctype html><html lang="es"><head><meta charset="utf-8">

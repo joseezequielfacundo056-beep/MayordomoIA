@@ -2,11 +2,21 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>MAYORDOMO // terminal</title>
 <meta property="og:title" content="MAYORDOMO // terminal">
 <meta property="og:description" content="Terminal cyber retro — hablá con el mayordomo.">
 <meta property="og:type" content="website">
+
+<!-- PWA: que se sienta como app nativa al agregarla a la pantalla de inicio -->
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#05060b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mayordomo">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%2305060b'/%3E%3Ccircle cx='32' cy='32' r='16' fill='%2329f6ff'/%3E%3Ccircle cx='32' cy='32' r='16' fill='none' stroke='%23ff2bd6' stroke-width='2'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,7 +37,8 @@
     --ease: cubic-bezier(.22,.61,.36,1);
   }
 
-  *{ box-sizing:border-box; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html{ height:100%; scroll-padding-top:env(safe-area-inset-top, 0px); }
   html,body{ height:100%; margin:0; }
 
   body{
@@ -39,7 +50,9 @@
     display:flex;
     flex-direction:column;
     overflow:hidden;
+    overscroll-behavior:none;
     position:relative;
+    -webkit-text-size-adjust:100%;
   }
 
   body::before{
@@ -67,7 +80,7 @@
     align-items:center;
     justify-content:space-between;
     gap:16px;
-    padding:16px clamp(16px, 4vw, 40px);
+    padding:calc(16px + env(safe-area-inset-top, 0px)) clamp(16px, 4vw, 40px) 16px;
     border-bottom:1px solid var(--panel-edge);
     background:linear-gradient(180deg, #0d1524 0%, #070a12 100%);
   }
@@ -432,7 +445,7 @@
   .tray{
     flex:0 0 auto;
     border-top:1px solid var(--panel-edge);
-    padding:14px clamp(16px, 5vw, 40px) 16px;
+    padding:14px clamp(16px, 5vw, 40px) calc(16px + env(safe-area-inset-bottom, 0px));
     background:linear-gradient(180deg, transparent, rgba(41,246,255,.04));
   }
 
@@ -603,6 +616,14 @@
 
 <script>
 (function(){
+
+  // registrar el service worker (solo mejora instalabilidad/PWA; si falla
+  // por lo que sea, la app funciona igual sin el)
+  if ('serviceWorker' in navigator){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
 
   const log = document.getElementById('log');
   const form = document.getElementById('form');
