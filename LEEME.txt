@@ -38,6 +38,28 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: personalidad, adjuntos, PDFs y acceso
+---------------------------------------------------
+- Español neutro por defecto (ya no "vos" ni modismos regionales), y
+  ahora sabe decir quién lo creó (variable MAYORDOMO_CREADOR en Render,
+  por defecto "Easyrae Tecnologia"). Tiene más personalidad propia.
+- Límites de mensaje mucho más altos (4000 palabras / 40000 caracteres,
+  antes 200/4000) pensado para uso personal en vez de exhibición
+  pública. Configurable via MAX_MESSAGE_WORDS / MAX_MESSAGE_CHARS.
+- Podés adjuntar imágenes (las analiza de verdad, vision real), PDFs
+  (los lee) y archivos de código/texto (los analiza como contexto) con
+  el botón 📎 al lado del mensaje. Máximo 5 archivos, 15MB cada uno.
+- Le podés pedir que te genere un PDF de verdad ("pasame esto en pdf",
+  "generame un documento con..."): te deja un botón de descarga en el
+  chat. Se guardan en memoria del proceso (no en disco) por 6 horas.
+- Los bloques de código en las respuestas ahora se muestran con fondo
+  monoespaciado, no como texto plano.
+- IMPORTANTE — seguridad: la URL de Render es pública. Como le sacamos
+  los límites estrictos, definí ACCESS_PASSWORD en las variables de
+  entorno de Render para que pida una clave antes de dejar chatear
+  (si no la definís, sigue abierta como estaba). Con clave puesta,
+  aparece un botón "cerrar sesión" en Configuración.
+
 Nota sobre Surge
 -----------------
 Surge no entra en este paquete a proposito: solo sirve archivos

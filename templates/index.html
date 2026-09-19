@@ -297,6 +297,48 @@
   }
   .settings-hr{ border:none; border-top:1px solid var(--panel-edge); margin:14px 0; }
 
+  /* ---------- adjuntos ---------- */
+  .adjuntos-preview{
+    display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;
+  }
+  .adjuntos-preview:empty{ display:none; }
+  .adjunto-chip{
+    display:flex; align-items:center; gap:6px;
+    background:#0a0f1a; border:1px solid rgba(41,246,255,.3); border-radius:14px;
+    padding:4px 10px; font-size:11.5px; color:var(--text-dim);
+    max-width:220px;
+  }
+  .adjunto-chip span.nombre{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .adjunto-chip button{
+    background:none; border:none; color:var(--danger); cursor:pointer;
+    font-size:13px; line-height:1; padding:0;
+  }
+  #attachBtn{
+    background:none; border:1px solid rgba(41,246,255,.25); border-radius:6px;
+    width:34px; height:34px; flex:0 0 auto; cursor:pointer; font-size:15px;
+    color:var(--cyan); display:flex; align-items:center; justify-content:center;
+    align-self:flex-end; margin-right:6px;
+  }
+  #attachBtn:hover{ border-color:var(--cyan); background:rgba(41,246,255,.08); }
+
+  /* ---------- bloques de codigo ---------- */
+  .code-block{
+    background:#05070d; border:1px solid rgba(41,246,255,.25); border-radius:6px;
+    padding:12px 14px; overflow-x:auto; margin:10px 0;
+  }
+  .code-block code{
+    font-family:"Share Tech Mono", monospace; font-size:12.5px; line-height:1.55;
+    color:#9be8ff; white-space:pre;
+  }
+
+  /* ---------- link de descarga de pdf ---------- */
+  .pdf-link{
+    display:inline-flex; align-items:center; gap:6px; margin-top:8px;
+    padding:6px 14px; border:1px solid var(--cyan); border-radius:6px;
+    color:var(--cyan); text-decoration:none; font-size:12.5px;
+  }
+  .pdf-link:hover{ background:rgba(41,246,255,.12); }
+
   .copy-btn{
     display:inline-flex; align-items:center; justify-content:center;
     width:20px; height:20px; margin-left:8px;
@@ -520,6 +562,13 @@
           <span class="slider"></span>
         </label>
       </div>
+
+      {% if acceso_protegido %}
+      <hr class="settings-hr">
+      <form method="post" action="/salir">
+        <button type="submit" class="link danger">cerrar sesión</button>
+      </form>
+      {% endif %}
     </div>
 
     <div class="orb-stage">
@@ -534,12 +583,15 @@
     </div>
 
     <div class="tray">
+      <div id="adjuntosPreview" class="adjuntos-preview"></div>
       <form id="form">
-        <textarea id="msg" rows="1" placeholder="escriba su mensaje…" maxlength="4000"></textarea>
+        <button type="button" id="attachBtn" aria-label="Adjuntar archivo" title="Adjuntar imagen, PDF o código">📎</button>
+        <input type="file" id="fileInput" multiple accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv,.html,.css,.java,.c,.cpp,.go,.rb,.php,.sql,.yaml,.yml,.xml,.sh" hidden>
+        <textarea id="msg" rows="1" placeholder="escriba su mensaje…" maxlength="40000"></textarea>
         <button type="submit" id="send" aria-label="Enviar">&gt;</button>
       </form>
       <div class="tray-foot">
-        <span id="count">0 / 200 palabras</span>
+        <span id="count">0 / 4000 palabras</span>
         <span>
           <button type="button" id="export">exportar charla</button>
           <button type="button" id="reset">cerrar sesion y reiniciar</button>
@@ -570,7 +622,7 @@
   const memText = document.getElementById('memText');
   const memBorrarBtn = document.getElementById('memBorrarBtn');
 
-  const MAX_WORDS = 200;
+  const MAX_WORDS = 4000;
   const WELCOME_HTML = '<p class="welcome">sesion iniciada. soy el mayordomo — decime en que te ayudo, o simplemente charlemos.</p>';
 
   // ---------- persistencia de sesion (sobrevive a un F5 accidental) ----------
@@ -776,12 +828,68 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
   function renderMarkdown(raw){
-    let s = escapeHtml(raw);
+    // el bloque ```pdf ... ``` ya se convirtio en un PDF de verdad del lado
+    // del servidor — no mostramos el markdown crudo, solo el link de descarga.
+    let s = raw.replace(/```pdf\s*\n[\s\S]*?```/g, '');
+
+    // separamos los bloques de codigo antes de escapar/parsear el resto,
+    // asi el contenido de adentro no se mezcla con negrita/links/etc.
+    const bloques = [];
+    s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      const idx = bloques.length;
+      bloques.push({ lang: (lang || '').trim(), code });
+      return `\u0000CODEBLOCK${idx}\u0000`;
+    });
+
+    s = escapeHtml(s);
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\n)_(.+?)_(?=\n|$)/g, '$1<span class="sig">$2</span>');
     s = s.replace(/(^|\n)- (.+)/g, '$1• $2');
+    s = s.replace(/\u{1F4CE} PDF:(\S+)/gu, (_, url) =>
+      `<a class="pdf-link" href="${url}" target="_blank" rel="noopener">📄 Descargar PDF</a>`);
+
+    s = s.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, idx) => {
+      const b = bloques[Number(idx)];
+      const cls = b.lang ? ` class="lang-${escapeHtml(b.lang)}"` : '';
+      return `<pre class="code-block"><code${cls}>${escapeHtml(b.code.replace(/\n$/, ''))}</code></pre>`;
+    });
     return s;
+  }
+
+  // ---------- adjuntos ----------
+  const attachBtn = document.getElementById('attachBtn');
+  const fileInput = document.getElementById('fileInput');
+  const adjuntosPreview = document.getElementById('adjuntosPreview');
+  let archivosSeleccionados = [];
+
+  attachBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', () => {
+    for (const f of fileInput.files) archivosSeleccionados.push(f);
+    fileInput.value = '';
+    pintarAdjuntos();
+  });
+
+  function pintarAdjuntos(){
+    adjuntosPreview.innerHTML = '';
+    archivosSeleccionados.forEach((f, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'adjunto-chip';
+      const nombre = document.createElement('span');
+      nombre.className = 'nombre';
+      nombre.textContent = f.name;
+      const quitar = document.createElement('button');
+      quitar.type = 'button';
+      quitar.textContent = '✕';
+      quitar.addEventListener('click', () => {
+        archivosSeleccionados.splice(i, 1);
+        pintarAdjuntos();
+      });
+      chip.appendChild(nombre);
+      chip.appendChild(quitar);
+      adjuntosPreview.appendChild(chip);
+    });
   }
 
   let busy = false;
@@ -791,7 +899,7 @@
     if (busy) return;
 
     const text = msg.value.trim();
-    if (!text) return;
+    if (!text && archivosSeleccionados.length === 0) return;
 
     const words = text.split(/\s+/).filter(Boolean).length;
     if (words > MAX_WORDS){
@@ -799,12 +907,19 @@
       return;
     }
 
+    const archivosParaEnviar = archivosSeleccionados;
+    const etiquetaAdjuntos = archivosParaEnviar.length
+      ? ` 📎(${archivosParaEnviar.map(f => f.name).join(', ')})`
+      : '';
+
     cmdHistory.push(text);
     histIndex = -1;
     draft = '';
 
-    addUserNote(text);
+    addUserNote((text || '(archivo adjunto)') + etiquetaAdjuntos);
     msg.value = '';
+    archivosSeleccionados = [];
+    pintarAdjuntos();
     autosize();
     count.textContent = `0 / ${MAX_WORDS} palabras`;
     count.classList.remove('over');
@@ -826,10 +941,13 @@
     let started = false;
 
     try{
+      const formData = new FormData();
+      formData.append('message', text);
+      archivosParaEnviar.forEach(f => formData.append('files', f, f.name));
+
       const res = await fetch('/chat', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json' },
-        body: JSON.stringify({ message: text })
+        body: formData,
       });
       clearTimeout(wakeupTimer);
       statusText.textContent = 'en linea';

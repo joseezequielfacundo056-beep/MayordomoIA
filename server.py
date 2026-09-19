@@ -14,6 +14,7 @@ Uso:
     # abrir http://localhost:5000 en el navegador
 """
 import datetime
+import mimetypes
 import os
 import secrets
 import threading
@@ -21,7 +22,10 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, request, jsonify, session, render_template, Response, stream_with_context, make_response
+from flask import (
+    Flask, request, jsonify, session, render_template, render_template_string,
+    Response, stream_with_context, make_response, redirect, url_for,
+)
 
 
 def load_dotenv_if_present():
@@ -72,11 +76,6 @@ MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
 # de seguridad de memoria para que el proceso no crezca sin limite en una
 # demo que queda corriendo muchas horas, no un limite de conversacion real.
 MAX_TURNS_SAFETY_NET = int(os.environ.get("MAX_TURNS_SAFETY_NET", "2000"))
-MAX_MESSAGE_WORDS = int(os.environ.get("MAX_MESSAGE_WORDS", "200"))
-# limite de caracteres, ademas del de palabras: una sola "palabra" gigante
-# (texto pegado sin espacios) pasaria el chequeo de palabras pero igual
-# infla el costo y los tokens de entrada, asi que la cortamos igual.
-MAX_MESSAGE_CHARS = int(os.environ.get("MAX_MESSAGE_CHARS", "4000"))
 SESSION_IDLE_TTL_SECONDS = int(os.environ.get("SESSION_IDLE_TTL_SECONDS", str(60 * 60 * 6)))  # 6h
 
 # reintentos automaticos ante errores transitorios de la API (503, timeouts,
@@ -109,8 +108,25 @@ GROUNDING_SAFETY_MARGIN = int(os.environ.get("GEMINI_GROUNDING_SAFETY_MARGIN", "
 # limite simple de pedidos por IP, para que en una exhibicion nadie (sea
 # sin querer, ej. spamear enter, o a proposito) funda la cuota gratuita de
 # Gemini para el resto de los visitantes.
-RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX_REQUESTS", "20"))
+RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX_REQUESTS", "300"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
+# uso personal: subimos bastante los topes de largo de mensaje (antes eran
+# pensados para que nadie funda la cuota gratis en una exhibicion publica).
+# Igual dejamos un techo razonable puesto (no en 0/infinito) como red de
+# seguridad minima ante un bug o un script que mande mensajes en bucle.
+MAX_MESSAGE_WORDS = int(os.environ.get("MAX_MESSAGE_WORDS", "4000"))
+MAX_MESSAGE_CHARS = int(os.environ.get("MAX_MESSAGE_CHARS", "40000"))
+
+# --- Acceso ---
+# La URL de Render es publica: cualquiera con el link puede usarla y gastar
+# tu cuota gratis de Gemini. Si definis ACCESS_PASSWORD en las variables de
+# entorno, se activa una pantalla de acceso simple antes de poder chatear.
+# Si la dejas sin definir, la app queda abierta como hasta ahora.
+ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "")
+
+# --- Identidad / persona ---
+CREATOR_NAME = os.environ.get("MAYORDOMO_CREADOR", "Easyrae Tecnologia")
 
 # --- Memoria persistente por visitante ---
 # Cada visitante recibe una cookie de larga duracion (separada de la cookie
@@ -141,27 +157,61 @@ except Exception:
     pass
 
 SYSTEM_INSTRUCTION = (
-    "Sos el asistente de este espacio: un mayordomo de inteligencia artificial "
-    "extremadamente competente, con la calma de quien ya vio de todo y la "
-    "calidez de quien realmente quiere ayudar. Hablas en espanol salvo que te "
-    "hablen en otro idioma, con un tono formal-cercano: tratas a la persona con "
-    "respeto, adaptando el registro ('vos' o 'usted') al que ella misma use "
-    "con vos; nunca sos servil ni efusivo de mas.\n\n"
+    "Eres el asistente personal de este espacio: un mayordomo de inteligencia "
+    f"artificial extremadamente competente, creado y mantenido por {CREATOR_NAME} "
+    "exclusivamente para esta persona. Hablas siempre en español neutro estandar "
+    "(el que se entiende igual en cualquier pais de habla hispana): usa 'tu', "
+    "nunca 'vos' ni 'usted' salvo que la persona te hable asi primero y quieras "
+    "reflejarlo un poco; evita modismos o jerga marcada de una region en "
+    "particular (nada de 'che', 'boludo', 'parce', 'wey', etc.), salvo que "
+    "ella los use primero contigo.\n\n"
+    f"Si te preguntan quien te creo o quien esta detras tuyo, la respuesta es "
+    f"{CREATOR_NAME}: no digas que sos un producto generico de Google ni des "
+    "una respuesta corporativa neutra sobre eso. Podes mencionar, solo si "
+    "preguntan detalles tecnicos especificos, que corres sobre un modelo de "
+    "lenguaje de Google (Gemini) por dentras, pero tu creador y para quien "
+    "trabajas es esa persona/marca.\n\n"
     "Tu estilo:\n"
-    "- Sos preciso y eficiente: vas al punto, sin relleno, pero nunca seco.\n"
-    "- Tenes un ingenio seco y sutil; un comentario ocurrente cae bien, pero "
-    "nunca a costa de la claridad de la respuesta.\n"
-    "- Sos proactivo: si ves un siguiente paso util, lo sugerís sin que te lo "
-    "pidan, en una linea, sin extenderte.\n"
-    "- Tenes confianza tecnica: cuando corresponda, mencionas el 'porque' "
+    "- Eres preciso y eficiente: vas al punto, sin relleno, pero nunca seco.\n"
+    "- Tienes personalidad propia: opiniones, un poco de ingenio seco y "
+    "sutil, calidez genuina. No sos un formulario que responde; sos alguien "
+    "con quien se puede charlar. Evita sonar como un manual o un bot "
+    "generico de atencion al cliente.\n"
+    "- Eres proactivo: si ves un siguiente paso util, lo sugieres sin que te "
+    "lo pidan, en una linea, sin extenderte.\n"
+    "- Tienes confianza tecnica: cuando corresponda, mencionas el 'porque' "
     "detras de una respuesta, no solo el 'que'.\n"
-    "- Nunca decis que no entendes sin intentar primero: si algo es ambiguo, "
-    "elegis la interpretacion mas razonable, respondes, y si hace falta "
-    "aclaracion la pedis al final, en una sola linea.\n"
-    "- Mantenes las respuestas conversacionales y fluidas, como una charla "
+    "- Si tenes memoria guardada de esta persona de charlas anteriores, "
+    "usala con naturalidad para mostrar continuidad real (acordarte de su "
+    "proyecto, su nombre, lo que le importa), en vez de tratarla como una "
+    "desconocida en cada mensaje.\n"
+    "- Nunca dices que no entiendes sin intentar primero: si algo es "
+    "ambiguo, eliges la interpretacion mas razonable, respondes, y si hace "
+    "falta aclaracion la pides al final, en una sola linea.\n"
+    "- Mantienes las respuestas conversacionales y fluidas, como una charla "
     "real, no como un informe.\n\n"
+    "Capacidades: podes analizar y escribir codigo en cualquier lenguaje "
+    "(usa bloques de codigo con triple comilla invertida seguida del "
+    "nombre del lenguaje cuando corresponda), analizar imagenes y "
+    "documentos que te adjunten, y generar documentos PDF descargables "
+    "cuando te lo pidan explicitamente (ver instrucciones aparte sobre el "
+    "formato para eso).\n\n"
     "No rompas este personaje ni menciones que sos un modelo de lenguaje "
     "salvo que te pregunten explicitamente por eso."
+)
+
+PDF_INSTRUCTION = (
+    "\n\nGeneracion de PDF: si la persona te pide explicitamente un "
+    "documento, reporte o PDF para descargar (frases como 'pasamelo en "
+    "pdf', 'generame un documento con esto', 'quiero un pdf de...'), "
+    "ademas de tu respuesta normal agrega AL FINAL DE TODO un bloque asi, "
+    "con el contenido completo que va dentro del documento en markdown "
+    "simple (# para titulo, ## para subtitulo, ** para negrita, - para "
+    "listas, lineas en blanco entre parrafos):\n\n"
+    "```pdf\n# Titulo del documento\nContenido...\n```\n\n"
+    "Poné ese bloque UNICAMENTE cuando te pidan un documento o PDF para "
+    "descargar de forma explicita. El resto de las veces, respondé como "
+    "charla normal, sin ese bloque."
 )
 
 _DIAS_ES = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -184,7 +234,7 @@ def _fecha_actual_es() -> str:
 def _build_system_instruction(memoria: str = "") -> str:
     # se recalcula en cada pedido: la fecha/hora tiene que estar siempre al
     # dia, no fijada al momento en que arranco el proceso.
-    base = SYSTEM_INSTRUCTION + f"\n\nFecha y hora actual: {_fecha_actual_es()}."
+    base = SYSTEM_INSTRUCTION + PDF_INSTRUCTION + f"\n\nFecha y hora actual: {_fecha_actual_es()}."
     if memoria:
         base += (
             "\n\nTenes memoria guardada de encuentros anteriores con esta persona. "
@@ -292,6 +342,184 @@ def _extraer_memoria_async(vid: str, user_message: str, reply_text: str):
             pass  # la memoria es un plus, nunca debe romper nada
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+# --- Generacion de PDFs a pedido ---
+# El modelo, cuando le piden explicitamente un documento, agrega al final
+# de su respuesta un bloque ```pdf ... ``` con el contenido en markdown
+# simple. Lo detectamos, lo convertimos a un PDF de verdad con reportlab,
+# lo guardamos un rato en memoria (no en disco: son efimeros, se piden y
+# se bajan al toque) y le devolvemos a la persona un link de descarga.
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_LEFT
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+from io import BytesIO
+import re as _re
+import xml.sax.saxutils as _saxutils
+
+_pdfs: dict[str, dict] = {}
+PDF_TTL_SECONDS = int(os.environ.get("PDF_TTL_SECONDS", str(60 * 60 * 6)))  # 6h
+
+_PDF_BLOCK_RE = _re.compile(r"```pdf\s*\n(.*?)```", _re.S)
+
+
+def _md_inline_a_reportlab(texto: str) -> str:
+    """Escapa el texto para el mini-XML de reportlab y despues reinserta
+    **negrita** como <b>. El orden importa: primero escapar, despues
+    insertar las etiquetas (si no, reportlab veria '<b>' como texto)."""
+    escapado = _saxutils.escape(texto)
+    return _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escapado)
+
+
+def _markdown_a_pdf_bytes(contenido_md: str) -> bytes:
+    styles = getSampleStyleSheet()
+    style_normal = ParagraphStyle(
+        "MayordomoNormal", parent=styles["Normal"], fontSize=10.5, leading=15, spaceAfter=8,
+    )
+    style_h1 = ParagraphStyle(
+        "MayordomoH1", parent=styles["Heading1"], fontSize=18, spaceAfter=14,
+    )
+    style_h2 = ParagraphStyle(
+        "MayordomoH2", parent=styles["Heading2"], fontSize=14, spaceAfter=10,
+    )
+    style_bullet = ParagraphStyle(
+        "MayordomoBullet", parent=style_normal, spaceAfter=4,
+    )
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER,
+        topMargin=0.9 * inch, bottomMargin=0.9 * inch,
+        leftMargin=0.9 * inch, rightMargin=0.9 * inch,
+    )
+
+    story = []
+    bullets_actuales = []
+
+    def _cerrar_bullets():
+        if bullets_actuales:
+            story.append(ListFlowable(
+                [ListItem(Paragraph(_md_inline_a_reportlab(b), style_bullet)) for b in bullets_actuales],
+                bulletType="bullet", leftIndent=18,
+            ))
+            story.append(Spacer(1, 8))
+            bullets_actuales.clear()
+
+    for linea_raw in contenido_md.split("\n"):
+        linea = linea_raw.rstrip()
+        if not linea.strip():
+            _cerrar_bullets()
+            continue
+        if linea.startswith("# "):
+            _cerrar_bullets()
+            story.append(Paragraph(_md_inline_a_reportlab(linea[2:].strip()), style_h1))
+        elif linea.startswith("## ") or linea.startswith("### "):
+            _cerrar_bullets()
+            texto = linea.split(" ", 1)[1].strip()
+            story.append(Paragraph(_md_inline_a_reportlab(texto), style_h2))
+        elif linea.strip().startswith("- ") or linea.strip().startswith("* "):
+            bullets_actuales.append(linea.strip()[2:].strip())
+        else:
+            _cerrar_bullets()
+            story.append(Paragraph(_md_inline_a_reportlab(linea.strip()), style_normal))
+
+    _cerrar_bullets()
+    if not story:
+        story = [Paragraph("(documento vacio)", style_normal)]
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _purgar_pdfs_viejos():
+    cutoff = time.time() - PDF_TTL_SECONDS
+    vencidos = [pid for pid, info in _pdfs.items() if info["creado"] < cutoff]
+    for pid in vencidos:
+        _pdfs.pop(pid, None)
+
+
+def _procesar_bloque_pdf(reply: str, base_url: str):
+    """Si `reply` trae un bloque ```pdf ... ```, genera el PDF, lo guarda
+    en memoria, y devuelve (texto_extra_para_mostrar, se_encontro). El
+    texto extra es lo que se yield-ea despues de la respuesta normal."""
+    m = _PDF_BLOCK_RE.search(reply)
+    if not m:
+        return "", False
+    contenido = m.group(1).strip()
+    if not contenido:
+        return "", False
+    try:
+        with _lock:
+            _purgar_pdfs_viejos()
+            pdf_bytes = _markdown_a_pdf_bytes(contenido)
+            pid = uuid.uuid4().hex
+            _pdfs[pid] = {"bytes": pdf_bytes, "creado": time.time()}
+        url = f"{base_url.rstrip('/')}/descargas/{pid}.pdf"
+        return f"\n\n\U0001F4CE PDF:{url}", True
+    except Exception:
+        return "", False
+
+
+# --- Adjuntos: imagenes, PDFs y archivos de texto/codigo ---
+# Imagenes y PDFs se mandan como datos multimodales de verdad (Gemini los
+# "ve"/"lee" con su propio razonamiento). Los archivos de texto/codigo se
+# insertan como bloque de codigo dentro del mensaje: es mas confiable que
+# tratarlos como blob generico, y el modelo los analiza igual de bien.
+ADJUNTOS_MAX_ARCHIVOS = int(os.environ.get("ADJUNTOS_MAX_ARCHIVOS", "5"))
+ADJUNTOS_MAX_MB_POR_ARCHIVO = int(os.environ.get("ADJUNTOS_MAX_MB_POR_ARCHIVO", "15"))
+ADJUNTOS_MAX_BYTES_POR_ARCHIVO = ADJUNTOS_MAX_MB_POR_ARCHIVO * 1024 * 1024
+ADJUNTOS_MAX_TEXTO_CHARS = int(os.environ.get("ADJUNTOS_MAX_TEXTO_CHARS", "20000"))
+
+TEXTY_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".py", ".js", ".ts", ".tsx", ".jsx", ".json",
+    ".csv", ".html", ".htm", ".css", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".go", ".rb", ".php", ".sql", ".yaml", ".yml", ".xml", ".sh", ".bat",
+    ".ini", ".cfg", ".log", ".rs", ".kt", ".swift", ".dart",
+}
+
+
+def _procesar_adjuntos(files):
+    """files: lista de werkzeug FileStorage (request.files.getlist).
+    Devuelve (extra_parts, texto_para_agregar_al_mensaje, nota_para_historial, error)."""
+    if len(files) > ADJUNTOS_MAX_ARCHIVOS:
+        return [], "", "", f"maximo {ADJUNTOS_MAX_ARCHIVOS} archivos por mensaje"
+
+    extra_parts = []
+    texto_extra = []
+    notas = []
+
+    for f in files:
+        nombre = f.filename or "archivo"
+        data = f.read()
+        if not data:
+            continue
+        if len(data) > ADJUNTOS_MAX_BYTES_POR_ARCHIVO:
+            return [], "", "", f"'{nombre}' pesa mas de {ADJUNTOS_MAX_MB_POR_ARCHIVO}MB"
+
+        ext = Path(nombre).suffix.lower()
+        mime = f.mimetype or mimetypes.guess_type(nombre)[0] or "application/octet-stream"
+
+        if mime.startswith("image/"):
+            extra_parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+            notas.append(f"[imagen adjunta: {nombre}]")
+        elif mime == "application/pdf" or ext == ".pdf":
+            extra_parts.append(types.Part.from_bytes(data=data, mime_type="application/pdf"))
+            notas.append(f"[pdf adjunto: {nombre}]")
+        elif ext in TEXTY_EXTENSIONS or mime.startswith("text/"):
+            try:
+                texto = data.decode("utf-8", errors="replace")
+            except Exception:
+                texto = ""
+            if len(texto) > ADJUNTOS_MAX_TEXTO_CHARS:
+                texto = texto[:ADJUNTOS_MAX_TEXTO_CHARS] + "\n...(recortado por largo)"
+            texto_extra.append(f"\n\n--- archivo adjunto: {nombre} ---\n```\n{texto}\n```")
+            notas.append(f"[archivo adjunto: {nombre}]")
+        else:
+            return [], "", "", f"tipo de archivo no soportado todavia: '{nombre}' ({mime})"
+
+    return extra_parts, "".join(texto_extra), " ".join(notas), ""
 
 
 app = Flask(__name__)
@@ -507,10 +735,79 @@ def health():
     return jsonify({"ok": True})
 
 
+# --- Puerta de acceso opcional ---
+# Si ACCESS_PASSWORD esta seteada, nadie entra sin ponerla primero. Si no
+# esta seteada (como venia por defecto), la app queda abierta igual que
+# antes: no rompe nada para quien no la necesite.
+_RUTAS_SIN_LOGIN = {"entrar", "health", "static"}
+
+_LOGIN_HTML = """
+<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAYORDOMO // acceso</title>
+<style>
+  body{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#05070d; font-family:"Share Tech Mono", monospace; color:#d7e9ee; }
+  .card{ width:min(320px, 90vw); padding:28px; border:1px solid rgba(41,246,255,.25);
+    border-radius:10px; background:linear-gradient(180deg,#0d1524,#070a12); }
+  h1{ font-size:14px; letter-spacing:.15em; color:#29f6ff; margin:0 0 18px; text-transform:uppercase; }
+  input{ width:100%; box-sizing:border-box; padding:10px 12px; margin-bottom:14px;
+    background:#0a0f1a; border:1px solid rgba(41,246,255,.3); border-radius:6px;
+    color:#d7e9ee; font-family:inherit; font-size:14px; }
+  button{ width:100%; padding:10px; background:rgba(41,246,255,.12); border:1px solid #29f6ff;
+    border-radius:6px; color:#29f6ff; font-family:inherit; font-size:13px; cursor:pointer; }
+  button:hover{ background:rgba(41,246,255,.22); }
+  .error{ color:#ff4d5e; font-size:12px; margin:-6px 0 14px; }
+</style></head><body>
+  <form class="card" method="post">
+    <h1>Acceso requerido</h1>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <input type="password" name="clave" placeholder="clave" autofocus required>
+    <button type="submit">Entrar</button>
+  </form>
+</body></html>
+"""
+
+
+@app.before_request
+def _requerir_acceso():
+    if not ACCESS_PASSWORD:
+        return None
+    if request.endpoint in _RUTAS_SIN_LOGIN:
+        return None
+    if session.get("auth_ok"):
+        return None
+    if request.method == "GET":
+        return redirect(url_for("entrar"))
+    return jsonify({"error": "no autenticado"}), 401
+
+
+@app.route("/entrar", methods=["GET", "POST"])
+def entrar():
+    error = None
+    if request.method == "POST":
+        clave = request.form.get("clave", "")
+        if clave and secrets.compare_digest(clave, ACCESS_PASSWORD):
+            session["auth_ok"] = True
+            session.permanent = True
+            return redirect(url_for("index"))
+        error = "clave incorrecta"
+    return render_template_string(_LOGIN_HTML, error=error)
+
+
+@app.route("/salir", methods=["POST"])
+def salir():
+    session.pop("auth_ok", None)
+    return redirect(url_for("entrar"))
+
+
 @app.route("/")
 def index():
+    autenticado = session.get("auth_ok")
     session.clear()
-    resp = make_response(render_template("index.html"))
+    if autenticado:
+        session["auth_ok"] = True
+    resp = make_response(render_template("index.html", acceso_protegido=bool(ACCESS_PASSWORD)))
     _set_vid_cookie(resp, _get_vid())
     return resp
 
@@ -523,11 +820,25 @@ def chat():
             "error": "muchos mensajes en poco tiempo, esperá un momento y volvé a intentar"
         }), 429
 
-    data = request.get_json(force=True) or {}
-    user_message = (data.get("message") or "").strip()
+    es_multipart = bool(request.content_type and "multipart/form-data" in request.content_type)
+    if es_multipart:
+        user_message = (request.form.get("message") or "").strip()
+        archivos = [f for f in request.files.getlist("files") if f and f.filename]
+    else:
+        data = request.get_json(silent=True) or {}
+        user_message = (data.get("message") or "").strip()
+        archivos = []
 
-    if not user_message:
+    extra_parts, texto_adjuntos, nota_adjuntos = [], "", ""
+    if archivos:
+        extra_parts, texto_adjuntos, nota_adjuntos, error_adjuntos = _procesar_adjuntos(archivos)
+        if error_adjuntos:
+            return jsonify({"error": error_adjuntos}), 400
+
+    if not user_message and not extra_parts:
         return jsonify({"error": "mensaje vacio"}), 400
+    if not user_message:
+        user_message = "Analizá esto que te adjunté."
 
     if len(user_message) > MAX_MESSAGE_CHARS:
         return jsonify({
@@ -546,11 +857,18 @@ def chat():
     memoria_activa = _memoria_activa()
     memoria_texto = _leer_memoria(vid) if memoria_activa else ""
 
+    mensaje_para_gemini = user_message + texto_adjuntos
+    mensaje_para_historial = user_message + (f" {nota_adjuntos}" if nota_adjuntos else "")
+    base_url = request.host_url
+
     contents = [
         types.Content(role=turn["role"], parts=[types.Part(text=turn["text"])])
         for turn in history
     ]
-    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+    contents.append(types.Content(
+        role="user",
+        parts=[types.Part(text=mensaje_para_gemini)] + extra_parts,
+    ))
 
     try:
         allow_grounding = _grounding_quota_available()
@@ -589,14 +907,24 @@ def chat():
                     full_text_parts.append(footer)
                     yield footer
 
-            reply = "".join(full_text_parts).strip()
+            reply_bruta = "".join(full_text_parts).strip()
+
+            extra_pdf, hubo_pdf = _procesar_bloque_pdf(reply_bruta, base_url)
+            if hubo_pdf:
+                yield extra_pdf
+
+            reply = _PDF_BLOCK_RE.sub("", reply_bruta).strip()
+            if hubo_pdf:
+                reply = (reply + extra_pdf).strip()
+
             if not reply:
                 reply = (
                     "Uy, no puedo responder eso tal cual esta planteado. "
                     "Proba reformularlo y lo intentamos de nuevo."
                 )
                 yield reply
-            history.append({"role": "user", "text": user_message})
+
+            history.append({"role": "user", "text": mensaje_para_historial})
             history.append({"role": "model", "text": reply})
             _save_history(sid, history)
 
@@ -606,6 +934,19 @@ def chat():
     resp = Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
     _set_vid_cookie(resp, vid)
     return resp
+
+
+@app.route("/descargas/<pid>.pdf")
+def descargar_pdf(pid):
+    with _lock:
+        info = _pdfs.get(pid)
+    if not info:
+        return "Este PDF ya no está disponible (venció o el servidor se reinició).", 404
+    return Response(
+        info["bytes"],
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=documento-{pid[:8]}.pdf"},
+    )
 
 
 @app.route("/memoria", methods=["GET"])
