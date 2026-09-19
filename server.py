@@ -880,7 +880,10 @@ def chat():
     try:
         allow_grounding = _grounding_quota_available()
         chunk_stream = _stream_with_retries(contents, allow_grounding, memoria_texto)
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[chat] fallo la llamada a Gemini: {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc()
         return jsonify({
             "error": "Gemini no respondio despues de varios intentos. Proba de nuevo en un momento."
         }), 502
