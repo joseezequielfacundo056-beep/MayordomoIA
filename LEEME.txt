@@ -1,0 +1,74 @@
+MAYORDOMO — paquete listo para deploy
+======================================
+
+Que hay aca adentro
+--------------------
+server.py            tu backend (sin cambios)
+templates/index.html front nuevo
+requirements.txt     dependencias (incluye gunicorn, para Render)
+Procfile              le dice a Render como arrancar la app
+.gitignore            evita que el .env con tu key se suba a GitHub
+.env.example           plantilla; copiala a ".env" y poné tu key
+                        real ahi SOLO para probar en tu compu
+deploy.bat            sube el proyecto a GitHub, listo para
+                        conectar en Render (un doble clic)
+
+Primera vez
+-----------
+1. Doble clic en deploy.bat
+2. Te va a pedir crear un repo vacio en GitHub y pegar su URL
+   (te abre la pagina solo)
+3. Al final te abre el dashboard de Render: ahi conectas ese
+   repo UNA sola vez (New + -> Web Service), con:
+     Build command:  pip install -r requirements.txt
+     Start command:  gunicorn server:app
+   y cargas tu GEMINI_API_KEY como variable de entorno secreta
+   ahi mismo (nunca en el codigo).
+4. Render te da una URL publica (algo.onrender.com). Esa es la
+   que compartis en la exhibicion.
+
+Despues de la primera vez
+--------------------------
+Si cambias algo del proyecto, con volver a hacer doble clic en
+deploy.bat alcanza: sube el cambio a GitHub y Render redeploya
+solo, sin que toques nada mas.
+
+Para probar en tu compu mientras tanto
+----------------------------------------
+Segui usando start.bat como hasta ahora (con tu .env local).
+Eso no cambia.
+
+Nota sobre Surge
+-----------------
+Surge no entra en este paquete a proposito: solo sirve archivos
+estaticos y esta app necesita un servidor Python corriendo de
+verdad (habla con Gemini, guarda el historial de cada charla).
+Render es el que hace ese trabajo.
+
+Novedades: memoria entre visitas + esfera "escuchando"
+--------------------------------------------------------
+- El mayordomo ahora guarda, por visitante (una cookie propia,
+  separada de la sesion), datos duraderos que aprende de la
+  charla (nombre, proyecto, preferencias) en un archivo de texto
+  plano dentro de data/memoria/. En la proxima visita los tiene
+  presentes, aunque la charla visible arranque de cero.
+- Es 100% opcional y visible: hay un boton de configuracion (⚙)
+  arriba a la derecha con un switch "recordar entre visitas",
+  un boton para ver textualmente lo que tiene guardado, y otro
+  para borrarlo todo.
+- OJO con Render free tier: el disco es efimero. La memoria
+  sobrevive mientras la instancia siga arriba (se duerme/
+  despierta sin perderla), pero un deploy nuevo (deploy.bat)
+  reinicia el filesystem y la borra. Para que sobreviva a los
+  deploys hace falta un disco persistente de Render (pago) o
+  guardarla afuera (ej. una base de datos gratuita tipo
+  Supabase/Turso). Por ahora, con archivos locales alcanza para
+  "recordarte durante la exhibicion", que es el caso de uso.
+- La esfera (el "orb") ahora tambien tiene un estado "escuchando"
+  propio: cuando el cursor esta en el campo de texto, late mas
+  rapido en cyan, distinto de "pensando" (magenta rapido) y
+  "hablando" (cyan respirando). Es 100% CSS, no agrega peso.
+- Funciones de camara/gestos: no se agrego nada de eso (no hacia
+  falta codigo real para eso, era solo un instalador ajeno). Deje
+  un switch deshabilitado en Configuracion a modo de placeholder,
+  para el dia que se implemente algo asi entre apagado.
