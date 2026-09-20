@@ -592,7 +592,7 @@
     </div>
 
     <div id="log">
-      <p class="welcome">sesion iniciada. soy el mayordomo — decime en que te ayudo, o simplemente charlemos.</p>
+      <p class="welcome">sesion iniciada. soy el mayordomo — dime en qué te ayudo, o simplemente charlemos.</p>
     </div>
 
     <div class="tray">
@@ -644,7 +644,7 @@
   const memBorrarBtn = document.getElementById('memBorrarBtn');
 
   const MAX_WORDS = 4000;
-  const WELCOME_HTML = '<p class="welcome">sesion iniciada. soy el mayordomo — decime en que te ayudo, o simplemente charlemos.</p>';
+  const WELCOME_HTML = '<p class="welcome">sesion iniciada. soy el mayordomo — dime en qué te ayudo, o simplemente charlemos.</p>';
 
   // ---------- persistencia de sesion (sobrevive a un F5 accidental) ----------
   try{
@@ -730,7 +730,7 @@
   });
 
   memBorrarBtn.addEventListener('click', async () => {
-    if (!confirm('¿Borrar todo lo que el mayordomo recuerda de vos?')) return;
+    if (!confirm('¿Borrar todo lo que el mayordomo recuerda de ti?')) return;
     try{ await fetch('/memoria/borrar', { method:'POST' }); }catch(_){}
     memoriaTexto = '';
     memText.textContent = '(todavía no hay nada guardado)';
@@ -974,7 +974,7 @@
       statusText.textContent = 'en linea';
 
       if (!res.ok){
-        let errMsg = 'el mayordomo no pudo responder, probá de nuevo en un momento';
+        let errMsg = 'el mayordomo no pudo responder, prueba de nuevo en un momento';
         try{ const j = await res.json(); if (j.error) errMsg = j.error; }catch(_){}
         cursor.remove();
         letter.parentElement.remove();
@@ -1007,7 +1007,7 @@
       clearTimeout(wakeupTimer);
       cursor.remove();
       letter.parentElement.remove();
-      addNotice('se perdió la conexión con el mayordomo — probá de nuevo');
+      addNotice('se perdió la conexión con el mayordomo — prueba de nuevo');
     } finally {
       busy = false;
       send.disabled = false;
@@ -1023,7 +1023,7 @@
     const lines = [];
     rows.forEach(row => {
       if (row.classList.contains('user')){
-        lines.push('vos: ' + row.querySelector('.note').textContent);
+        lines.push('tú: ' + row.querySelector('.note').textContent);
       } else if (row.classList.contains('assistant')){
         const clone = row.querySelector('.letter').cloneNode(true);
         clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
@@ -1044,7 +1044,7 @@
   resetBtn.addEventListener('click', async () => {
     if (busy) return;
     try{ await fetch('/reset', { method:'POST' }); }catch(_){}
-    log.innerHTML = '<p class="welcome">sesion reiniciada. soy el mayordomo — decime en que te ayudo, o simplemente charlemos.</p>';
+    log.innerHTML = '<p class="welcome">sesion reiniciada. soy el mayordomo — dime en qué te ayudo, o simplemente charlemos.</p>';
     try{ sessionStorage.removeItem('mayordomo_log'); }catch(_){}
     cmdHistory.length = 0;
     histIndex = -1;
