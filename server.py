@@ -72,9 +72,9 @@ client = genai.Client(
         # que sea UNA sola tanda corta, en vez de que se sume a nuestro
         # propio reintento de mas arriba y termine tardando minutos).
         retry_options=types.HttpRetryOptions(
-            attempts=2,
+            attempts=3,
             initial_delay=0.5,
-            max_delay=3.0,
+            max_delay=4.0,
             exp_base=2.0,
             http_status_codes=[429, 500, 502, 503, 504],
         ),
@@ -83,6 +83,11 @@ client = genai.Client(
 
 # --- Config, ajustable por variables de entorno sin tocar el codigo ---
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# si el modelo principal esta saturado (503 "high demand") o cae, probamos
+# una vez con este antes de rendirnos. Es un modelo distinto (no solo un
+# reintento del mismo), asi que un pico de demanda puntual en uno no
+# necesariamente afecta al otro.
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "1.0"))
 # tokens de salida altos: la unica restriccion de largo que queremos es la de
 # ENTRADA (200 palabras por mensaje del usuario), la respuesta del modelo no
@@ -701,10 +706,10 @@ def _format_sources(grounding_metadata) -> str:
     return "**Fuentes:**\n" + "\n".join(lineas)
 
 
-def _try_stream(contents, use_grounding: bool, memoria: str = ""):
+def _try_stream(contents, use_grounding: bool, memoria: str = "", model: str = MODEL):
     tools = [types.Tool(google_search=types.GoogleSearch())] if use_grounding else None
     stream = client.models.generate_content_stream(
-        model=MODEL,
+        model=model,
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_instruction(memoria),
@@ -727,15 +732,21 @@ def _try_stream(contents, use_grounding: bool, memoria: str = ""):
 
 def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
     """Version en streaming de _generate_with_retries: devuelve un generador
-    de texto que va yield-eando pedazos de la respuesta a medida que Gemini
-    los produce, para que el chat se sienta vivo en vez de tildado esperando
-    la respuesta entera.
+    de texto que va yield-eando pedazos de la respuesta a medida que el
+    modelo los produce, para que el chat se sienta vivo en vez de tildado
+    esperando la respuesta entera.
 
     El reintento ante errores transitorios (503, 429, timeouts) ya lo hace
     el SDK internamente (ver retry_options del cliente, mas arriba) en una
-    sola tanda corta y acotada. Aca NO volvemos a reintentar en bucle: eso
-    solo sumaba minutos de espera innecesarios y terminaba chocando con el
-    limite de tiempo de gunicorn, que es lo que causaba los cuelgues.
+    sola tanda corta y acotada. Aca NO volvemos a reintentar en bucle con
+    el MISMO modelo: eso solo sumaba minutos de espera innecesarios y
+    terminaba chocando con el limite de tiempo de gunicorn.
+
+    Lo que si hacemos es, si el modelo principal sigue sin responder
+    despues de eso (por ejemplo un 503 "high demand" persistente), probar
+    UNA vez con un modelo de respaldo distinto antes de rendirnos del
+    todo: un pico de demanda puntual en un modelo no necesariamente pega
+    igual en otro.
 
     Si allow_grounding es True, primero intenta CON busqueda en vivo. No
     sabemos de antemano si la key/proyecto la tiene habilitada, asi que si
@@ -750,7 +761,13 @@ def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
         except Exception:
             _grounding_unavailable = True
 
-    return _try_stream(contents, use_grounding=False, memoria=memoria)
+    try:
+        return _try_stream(contents, use_grounding=False, memoria=memoria)
+    except Exception as e:
+        if FALLBACK_MODEL and FALLBACK_MODEL != MODEL:
+            print(f"[chat] modelo principal fallo ({type(e).__name__}), probando respaldo {FALLBACK_MODEL}", flush=True)
+            return _try_stream(contents, use_grounding=False, memoria=memoria, model=FALLBACK_MODEL)
+        raise
 
 
 @app.route("/health")
@@ -911,7 +928,7 @@ def chat():
         print(f"[chat] fallo la llamada al modelo: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         return jsonify({
-            "error": "El mayordomo no pudo responder en este momento. Prueba de nuevo en unos segundos."
+            "error": "El mayordomo esta con mucha demanda en este momento (le pasa al proveedor de IA, no a tu conexion). Prueba de nuevo en unos segundos."
         }), 502
 
     def generate():
