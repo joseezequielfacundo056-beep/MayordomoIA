@@ -88,7 +88,7 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 # una vez con este antes de rendirnos. Es un modelo distinto (no solo un
 # reintento del mismo), asi que un pico de demanda puntual en uno no
 # necesariamente afecta al otro.
-FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 
 # --- Groq: tercer proveedor, ultimo recurso ---
 # Corre en infraestructura totalmente distinta a Google, asi que si los DOS
