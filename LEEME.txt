@@ -38,6 +38,21 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: tercer proveedor de respaldo (Groq)
+--------------------------------------------------
+- Cadena de respaldo ante fallos: si el modelo principal de Gemini
+  esta saturado, prueba con un segundo modelo de Gemini distinto; si
+  los dos fallan (Google entero con problemas) y pusiste una
+  GROQ_API_KEY, prueba con Groq como ultimo recurso (infraestructura
+  totalmente separada de Google).
+- Limitacion real: los modelos de Groq no leen imagenes ni PDFs, asi
+  que si el turno tenia un adjunto de esos, no se usa este respaldo
+  (no tendria sentido, se comeria el adjunto en silencio) y se
+  muestra el error original de Gemini.
+- Variables opcionales en Render: GROQ_API_KEY (la key, gratis en
+  console.groq.com) y GROQ_MODEL (por defecto
+  llama-3.3-70b-versatile). Sin GROQ_API_KEY, este nivel no existe.
+
 Novedades: se arreglaron los cuelgues y las respuestas cortadas
 --------------------------------------------------------------------
 - La causa real: el SDK de Gemini YA reintenta solo ante errores
