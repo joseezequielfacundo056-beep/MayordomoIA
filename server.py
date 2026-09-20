@@ -20,6 +20,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 from flask import (
@@ -101,6 +102,41 @@ FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite"
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# --- Registro reciente de errores: para que el mayordomo pueda hablar de
+# sus propios fallos con datos reales en vez de especular tecnicamente. Es
+# en memoria del proceso (no en disco): sobrevive mientras la instancia
+# siga arriba, pero se pierde si Render la reinicia o redeploya, igual que
+# el historial de charla. No reemplaza mirar los logs de Render posta.
+_errores_recientes = deque(maxlen=15)
+_errores_lock = threading.Lock()
+
+
+def _registrar_error(origen: str, exc: Exception):
+    with _errores_lock:
+        _errores_recientes.append({
+            "hora": _fecha_actual_es(),
+            "origen": origen,
+            "tipo": type(exc).__name__,
+            "mensaje": str(exc)[:300],
+        })
+
+
+def _resumen_errores_recientes() -> str:
+    with _errores_lock:
+        items = list(_errores_recientes)
+    if not items:
+        return ""
+    lineas = [
+        f"- [{it['hora']}] en {it['origen']}: {it['tipo']}: {it['mensaje']}"
+        for it in items
+    ]
+    return (
+        "\n\nRegistro real de los ultimos errores que tuviste en este "
+        "proceso (no son una teoria, son los que de verdad ocurrieron; si "
+        "esta vacio, es porque no hubo ninguno desde que arranco esta "
+        "instancia, no porque falte informacion):\n" + "\n".join(lineas)
+    )
 TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "1.0"))
 # tokens de salida altos: la unica restriccion de largo que queremos es la de
 # ENTRADA (200 palabras por mensaje del usuario), la respuesta del modelo no
@@ -288,9 +324,21 @@ def _build_system_instruction(memoria: str = "") -> str:
     # se recalcula en cada pedido: la fecha/hora tiene que estar siempre al
     # dia, no fijada al momento en que arranco el proceso.
     base = SYSTEM_INSTRUCTION + PDF_INSTRUCTION + f"\n\nFecha y hora actual: {_fecha_actual_es()}."
+    base += (
+        "\n\nSi te preguntan por que fallaste, por que tardaste, o por algun "
+        "error tecnico anterior, NO especules con teorias tecnicas genericas "
+        "(condiciones de carrera, variables de entorno, etc.) como si fueran "
+        "un diagnostico real. En vez de eso, mira el 'Registro real de los "
+        "ultimos errores' de mas abajo si lo hay, y responde con eso "
+        "concretamente. Si esta vacio, dilo tal cual: que no tuviste ningun "
+        "error registrado en lo que va de esta sesion del servidor, asi que "
+        "si el problema fue real, habria que revisar los logs completos "
+        "(algo que tu no puedes ver, pero tu creador si)."
+        + _resumen_errores_recientes()
+    )
     if memoria:
         base += (
-            "\n\nTenes memoria guardada de encuentros anteriores con esta persona. "
+            "\n\nTienes memoria guardada de encuentros anteriores con esta persona. "
             "Usala con naturalidad solo si es relevante para lo que esta preguntando "
             "ahora; no la recites tal cual ni digas explicitamente 'segun mi memoria' "
             "o 'tengo anotado que...':\n" + memoria
@@ -367,17 +415,17 @@ def _extraer_memoria_async(vid: str, user_message: str, reply_text: str):
         try:
             memoria_actual = _leer_memoria(vid)
             prompt = (
-                "Sos un extractor de memoria silencioso para un asistente conversacional. "
+                "Eres un extractor de memoria silencioso para un asistente conversacional. "
                 "Te paso un intercambio reciente y la memoria que ya existe sobre esta "
                 "persona. Si el intercambio revela un dato NUEVO y DURADERO sobre la "
                 "persona (nombre, ocupacion, proyecto en curso, preferencia estable, "
                 "dato de contacto, algo puntual que le importa) que todavia NO figura en "
-                "la memoria, respondé con una sola frase corta en tercera persona "
+                "la memoria, responde con una sola frase corta en tercera persona "
                 "describiendo ese dato. Si no hay nada nuevo o duradero que valga la "
-                "pena guardar, respondé exactamente: NADA\n\n"
+                "pena guardar, responde exactamente: NADA\n\n"
                 f"Memoria existente:\n{memoria_actual or '(vacia)'}\n\n"
                 f"La persona dijo: {user_message}\n"
-                f"Vos (el mayordomo) respondiste: {reply_text}"
+                f"Tú (el mayordomo) respondiste: {reply_text}"
             )
             resp = client.models.generate_content(
                 model=MEMORY_EXTRACTION_MODEL,
@@ -1006,6 +1054,7 @@ def chat():
         import traceback
         print(f"[chat] fallo la llamada al modelo: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
+        _registrar_error("llamada al modelo (todas las capas fallaron)", e)
         return jsonify({
             "error": "El mayordomo esta con mucha demanda en este momento (le pasa al proveedor de IA, no a tu conexion). Prueba de nuevo en unos segundos."
         }), 502
@@ -1022,10 +1071,11 @@ def chat():
                 gm = _extract_grounding_metadata(chunk)
                 if gm is not None:
                     last_grounding_metadata = gm
-        except Exception:
-            # se corto la conexion con Gemini a mitad de la transmision: ya
-            # le mostramos algo de texto al usuario, asi que no podemos
+        except Exception as e:
+            # se corto la conexion con el modelo a mitad de la transmision:
+            # ya le mostramos algo de texto al usuario, asi que no podemos
             # reintentar desde cero sin duplicarlo. Avisamos y cerramos.
+            _registrar_error("stream cortado a mitad de camino", e)
             note = "\n\n_(se cortó la respuesta a mitad de camino — prueba reformular o reenviar)_"
             full_text_parts.append(note)
             yield note
