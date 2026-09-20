@@ -38,6 +38,24 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: se arreglaron los cuelgues y las respuestas cortadas
+--------------------------------------------------------------------
+- La causa real: el SDK de Gemini YA reintenta solo ante errores
+  transitorios (por defecto, varios intentos con espera creciente),
+  y por encima de eso el codigo tenia SU PROPIO reintento manual.
+  Se sumaban entre si: ante cualquier hipo de red, la espera total
+  podia superar el limite de 30 segundos que gunicorn le da a un
+  pedido antes de matarlo — eso se sentia como "no responde" o
+  "se corta a la mitad", sin relacion con cuanto se usaba la app.
+- Ahora: timeout explicito de 30s por intento + un solo reintento
+  corto y acotado (antes eran hasta 3 reintentos propios ENCIMA de
+  los del SDK). Ademas subimos el limite de gunicorn a 90s como
+  margen real, con gunicorn.conf.py (no hace falta tocar el Start
+  Command en Render, se lee solo).
+- El mayordomo ya no menciona a Gemini ni a Google en ningun lado,
+  ni siquiera si le preguntan detalles tecnicos: la respuesta a
+  "quien te creo" es siempre tu nombre (variable MAYORDOMO_CREADOR).
+
 Novedades: se siente como app nativa en iPhone/Android
 -----------------------------------------------------------
 - Se puede "instalar" de verdad: en iPhone, Safari → compartir →
