@@ -52,6 +52,7 @@ load_dotenv_if_present()
 
 from google import genai
 from google.genai import types
+from groq import Groq
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
@@ -88,6 +89,18 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 # reintento del mismo), asi que un pico de demanda puntual en uno no
 # necesariamente afecta al otro.
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
+
+# --- Groq: tercer proveedor, ultimo recurso ---
+# Corre en infraestructura totalmente distinta a Google, asi que si los DOS
+# modelos de Gemini estan caidos/saturados a la vez (poco comun, pero pasa),
+# Groq probablemente no este teniendo el mismo problema. Es opcional: si no
+# hay GROQ_API_KEY, este nivel simplemente no existe y todo sigue como
+# antes. Limitacion real: los modelos de Groq que usamos aca no leen
+# imagenes/PDFs, asi que si el turno actual tiene adjuntos de ese tipo, no
+# lo intentamos (no tendria sentido, se comeria las imagenes en silencio).
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "1.0"))
 # tokens de salida altos: la unica restriccion de largo que queremos es la de
 # ENTRADA (200 palabras por mensaje del usuario), la respuesta del modelo no
@@ -706,6 +719,60 @@ def _format_sources(grounding_metadata) -> str:
     return "**Fuentes:**\n" + "\n".join(lineas)
 
 
+class _TextChunk:
+    """Envoltorio minimo para que un pedazo de texto de Groq tenga la misma
+    forma que un chunk de Gemini (los consumidores solo miran .text, y
+    para todo lo demas - grounding, etc - alcanza con devolver None)."""
+    def __init__(self, text):
+        self.text = text
+
+    def __getattr__(self, _name):
+        return None
+
+
+def _contents_a_mensajes_groq(contents, system_instruction: str):
+    """Convierte nuestra lista de Content (formato Gemini) a mensajes estilo
+    OpenAI/Groq. Devuelve (mensajes, tiene_adjuntos_no_textuales) - si hay
+    imagenes o PDFs en el turno, Groq no los puede leer, asi que avisamos
+    para que quien llama decida no usar este camino en ese caso."""
+    mensajes = [{"role": "system", "content": system_instruction}]
+    tiene_adjuntos = False
+    for content in contents:
+        textos = []
+        for part in content.parts:
+            texto = getattr(part, "text", None)
+            if texto:
+                textos.append(texto)
+            elif getattr(part, "inline_data", None) is not None:
+                tiene_adjuntos = True
+        if textos:
+            rol = "assistant" if content.role == "model" else "user"
+            mensajes.append({"role": rol, "content": "\n".join(textos)})
+    return mensajes, tiene_adjuntos
+
+
+def _try_stream_groq(contents, memoria: str = ""):
+    mensajes, tiene_adjuntos = _contents_a_mensajes_groq(contents, _build_system_instruction(memoria))
+    if tiene_adjuntos:
+        raise RuntimeError("este turno tiene imagenes/PDF: Groq no los puede leer, no tiene sentido intentarlo")
+
+    stream = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=mensajes,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_OUTPUT_TOKENS,
+        stream=True,
+    )
+
+    def full_generator():
+        for chunk in stream:
+            texto = chunk.choices[0].delta.content if chunk.choices else None
+            if texto:
+                yield _TextChunk(texto)
+
+    return full_generator()
+
+
 def _try_stream(contents, use_grounding: bool, memoria: str = "", model: str = MODEL):
     tools = [types.Tool(google_search=types.GoogleSearch())] if use_grounding else None
     stream = client.models.generate_content_stream(
@@ -746,7 +813,10 @@ def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
     despues de eso (por ejemplo un 503 "high demand" persistente), probar
     UNA vez con un modelo de respaldo distinto antes de rendirnos del
     todo: un pico de demanda puntual en un modelo no necesariamente pega
-    igual en otro.
+    igual en otro. Si los DOS modelos de Gemini fallan y hay una
+    GROQ_API_KEY configurada, probamos como ultimo recurso con Groq (otra
+    infraestructura totalmente distinta) - salvo que el turno tenga
+    imagenes/PDF adjuntos, que Groq no puede leer.
 
     Si allow_grounding es True, primero intenta CON busqueda en vivo. No
     sabemos de antemano si la key/proyecto la tiene habilitada, asi que si
@@ -765,9 +835,18 @@ def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
         return _try_stream(contents, use_grounding=False, memoria=memoria)
     except Exception as e:
         if FALLBACK_MODEL and FALLBACK_MODEL != MODEL:
-            print(f"[chat] modelo principal fallo ({type(e).__name__}), probando respaldo {FALLBACK_MODEL}", flush=True)
-            return _try_stream(contents, use_grounding=False, memoria=memoria, model=FALLBACK_MODEL)
-        raise
+            try:
+                print(f"[chat] modelo principal fallo ({type(e).__name__}), probando respaldo {FALLBACK_MODEL}", flush=True)
+                return _try_stream(contents, use_grounding=False, memoria=memoria, model=FALLBACK_MODEL)
+            except Exception as e2:
+                e = e2
+        if groq_client is not None:
+            try:
+                print(f"[chat] los dos modelos de Gemini fallaron, probando Groq ({GROQ_MODEL})", flush=True)
+                return _try_stream_groq(contents, memoria=memoria)
+            except Exception:
+                pass  # si Groq tampoco puede (o habia adjuntos), cae al error original de Gemini
+        raise e
 
 
 @app.route("/health")
