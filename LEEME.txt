@@ -38,6 +38,28 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: memoria que sobrevive a los redeploys (Supabase)
+------------------------------------------------------------------
+- Hasta ahora la memoria vivia en archivos locales, que Render borra
+  en cada deploy.bat (disco efimero del free tier). Ahora, si
+  configuras SUPABASE_URL y SUPABASE_KEY, la memoria vive en una
+  base de datos real de Supabase (gratis) que sobrevive a todo.
+- Sin esas variables, sigue funcionando exactamente igual que antes
+  (archivos locales) - es 100% opcional, no rompe nada si no lo
+  configuras.
+- Pasos para activarlo:
+  1. Crea un proyecto gratis en supabase.com
+  2. Dashboard del proyecto -> SQL Editor -> pega el contenido de
+     supabase_setup.sql (viene en este mismo paquete) -> Run
+  3. Settings -> API -> copia la "service_role" key (NO la "anon")
+  4. En Render: variables SUPABASE_URL (la "Project URL") y
+     SUPABASE_KEY (la service_role key que copiaste)
+- Con esto activado, ademas se resuelve la limitacion de antes:
+  la memoria queda en un solo lugar central, asi que en el futuro
+  se podria compartir entre el iPhone y la PC si alguna vez se
+  agrega un login real (por ahora cada dispositivo sigue siendo un
+  "visitante" separado, eso no cambio con este paso).
+
 Novedades: tercer proveedor de respaldo (Groq)
 --------------------------------------------------
 - Cadena de respaldo ante fallos: si el modelo principal de Gemini

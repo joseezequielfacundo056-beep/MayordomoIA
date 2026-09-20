@@ -51,6 +51,7 @@ def load_dotenv_if_present():
 
 load_dotenv_if_present()
 
+import requests
 from google import genai
 from google.genai import types
 from groq import Groq
@@ -352,7 +353,65 @@ def _vid_path(vid: str) -> Path:
     return MEMORIA_DIR / f"{safe}.txt"
 
 
+def _combinar_nota_memoria(existente: str, nota: str) -> str | None:
+    """Logica pura (sin tocar disco ni red): agrega la nota nueva con fecha,
+    evita duplicarla si ya esta tal cual, y recorta por las lineas mas
+    viejas si se pasa del limite de tamano. Devuelve None si no hay nada
+    que escribir (nota vacia o ya estaba)."""
+    fecha = datetime.date.today().isoformat()
+    linea = f"- [{fecha}] {nota}"
+    if linea in existente:
+        return None
+    nuevo = (existente + "\n" + linea).strip() if existente else linea
+    if len(nuevo) > MEMORIA_MAX_CHARS:
+        lineas = nuevo.split("\n")
+        while len("\n".join(lineas)) > MEMORIA_MAX_CHARS and len(lineas) > 1:
+            lineas.pop(0)
+        nuevo = "\n".join(lineas)
+    return nuevo
+
+
+# --- Backend de memoria: Supabase (sobrevive redeploys) o archivos locales ---
+# Los archivos locales en Render free tier se pierden en cada redeploy (el
+# disco es efimero). Si se configura Supabase (gratis, console.supabase.com),
+# la memoria vive en una base de datos real que sobrevive a los deploys. Es
+# opcional: sin las variables de entorno, todo sigue funcionando con
+# archivos locales como hasta ahora.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+SUPABASE_TABLE = os.environ.get("SUPABASE_MEMORIA_TABLE", "memoria_mayordomo")
+SUPABASE_TIMEOUT = float(os.environ.get("SUPABASE_TIMEOUT", "5"))
+
+
+def _supabase_activo() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_KEY)
+
+
+def _supabase_headers(extra: dict | None = None) -> dict:
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 def _leer_memoria(vid: str) -> str:
+    if _supabase_activo():
+        try:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"visitor_id": f"eq.{vid}", "select": "texto"},
+                headers=_supabase_headers(),
+                timeout=SUPABASE_TIMEOUT,
+            )
+            resp.raise_for_status()
+            filas = resp.json()
+            return (filas[0].get("texto") or "").strip() if filas else ""
+        except Exception:
+            return ""  # supabase con problemas: seguimos sin memoria esta vez, no rompe el chat
     try:
         return _vid_path(vid).read_text(encoding="utf-8").strip()
     except Exception:
@@ -363,25 +422,47 @@ def _guardar_nota_memoria(vid: str, nota: str):
     nota = (nota or "").strip()
     if not nota:
         return
+
+    if _supabase_activo():
+        try:
+            existente = _leer_memoria(vid)
+            nuevo = _combinar_nota_memoria(existente, nota)
+            if nuevo is None:
+                return
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"on_conflict": "visitor_id"},
+                headers=_supabase_headers({"Prefer": "resolution=merge-duplicates"}),
+                json={"visitor_id": vid, "texto": nuevo},
+                timeout=SUPABASE_TIMEOUT,
+            )
+        except Exception:
+            pass
+        return
+
     try:
         with _lock:
             existente = _leer_memoria(vid)
-            fecha = datetime.date.today().isoformat()
-            linea = f"- [{fecha}] {nota}"
-            if linea in existente:
+            nuevo = _combinar_nota_memoria(existente, nota)
+            if nuevo is None:
                 return
-            nuevo = (existente + "\n" + linea).strip() if existente else linea
-            if len(nuevo) > MEMORIA_MAX_CHARS:
-                lineas = nuevo.split("\n")
-                while len("\n".join(lineas)) > MEMORIA_MAX_CHARS and len(lineas) > 1:
-                    lineas.pop(0)
-                nuevo = "\n".join(lineas)
             _vid_path(vid).write_text(nuevo + "\n", encoding="utf-8")
     except Exception:
         pass
 
 
 def _borrar_memoria(vid: str):
+    if _supabase_activo():
+        try:
+            requests.delete(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"visitor_id": f"eq.{vid}"},
+                headers=_supabase_headers(),
+                timeout=SUPABASE_TIMEOUT,
+            )
+        except Exception:
+            pass
+        return
     try:
         _vid_path(vid).unlink()
     except FileNotFoundError:

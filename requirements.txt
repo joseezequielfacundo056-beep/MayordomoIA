@@ -3,3 +3,4 @@ google-genai>=0.3
 gunicorn>=21.2
 reportlab>=4.0
 groq>=0.9
+requests>=2.28
