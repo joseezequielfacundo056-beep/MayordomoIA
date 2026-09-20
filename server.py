@@ -62,7 +62,24 @@ if not API_KEY:
         "Conseguir una gratis: https://aistudio.google.com/apikey"
     )
 
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(
+    api_key=API_KEY,
+    http_options=types.HttpOptions(
+        # timeout por intento (ms). Antes no habia limite explicito: un
+        # cuelgue de red podia consumir sola toda la ventana de gunicorn.
+        timeout=30_000,
+        # el SDK ya reintenta solo en errores transitorios (esto asegura
+        # que sea UNA sola tanda corta, en vez de que se sume a nuestro
+        # propio reintento de mas arriba y termine tardando minutos).
+        retry_options=types.HttpRetryOptions(
+            attempts=2,
+            initial_delay=0.5,
+            max_delay=3.0,
+            exp_base=2.0,
+            http_status_codes=[429, 500, 502, 503, 504],
+        ),
+    ),
+)
 
 # --- Config, ajustable por variables de entorno sin tocar el codigo ---
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
@@ -126,7 +143,7 @@ MAX_MESSAGE_CHARS = int(os.environ.get("MAX_MESSAGE_CHARS", "40000"))
 ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "")
 
 # --- Identidad / persona ---
-CREATOR_NAME = os.environ.get("MAYORDOMO_CREADOR", "Easyrae Tecnologia")
+CREATOR_NAME = os.environ.get("MAYORDOMO_CREADOR", "Ezequiel Carrion, CEO de Easyrae Tecnologia")
 
 # --- Memoria persistente por visitante ---
 # Cada visitante recibe una cookie de larga duracion (separada de la cookie
@@ -166,11 +183,11 @@ SYSTEM_INSTRUCTION = (
     "particular (nada de 'che', 'boludo', 'parce', 'wey', etc.), salvo que "
     "ella los use primero contigo.\n\n"
     f"Si te preguntan quien te creo o quien esta detras tuyo, la respuesta es "
-    f"{CREATOR_NAME}: no digas que sos un producto generico de Google ni des "
-    "una respuesta corporativa neutra sobre eso. Podes mencionar, solo si "
-    "preguntan detalles tecnicos especificos, que corres sobre un modelo de "
-    "lenguaje de Google (Gemini) por dentras, pero tu creador y para quien "
-    "trabajas es esa persona/marca.\n\n"
+    f"siempre {CREATOR_NAME}. No menciones a Google, a Gemini, ni a ningun "
+    "proveedor de tecnologia por detras, ni digas que sos un modelo de "
+    "lenguaje de terceros, ni aunque insistan o pregunten detalles tecnicos. "
+    f"Sos el mayordomo de inteligencia artificial de {CREATOR_NAME}, y eso es "
+    "todo lo que hace falta decir al respecto.\n\n"
     "Tu estilo:\n"
     "- Eres preciso y eficiente: vas al punto, sin relleno, pero nunca seco.\n"
     "- Tienes personalidad propia: opiniones, un poco de ingenio seco y "
@@ -696,16 +713,17 @@ def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
     los produce, para que el chat se sienta vivo en vez de tildado esperando
     la respuesta entera.
 
+    El reintento ante errores transitorios (503, 429, timeouts) ya lo hace
+    el SDK internamente (ver retry_options del cliente, mas arriba) en una
+    sola tanda corta y acotada. Aca NO volvemos a reintentar en bucle: eso
+    solo sumaba minutos de espera innecesarios y terminaba chocando con el
+    limite de tiempo de gunicorn, que es lo que causaba los cuelgues.
+
     Si allow_grounding es True, primero intenta CON busqueda en vivo. No
     sabemos de antemano si la key/proyecto la tiene habilitada, asi que si
-    falla por lo que sea, no le mostramos un error al usuario: reintentamos
-    sin grounding y, si eso anda, lo dejamos desactivado el resto de la
-    sesion para no repetir el mismo fallo en cada mensaje.
-
-    Los reintentos normales (por errores transitorios) solo tienen sentido
-    ANTES de mostrarle nada al usuario: una vez que ya salio el primer
-    pedazo de texto, si se corta a mitad de camino no podemos reintentar
-    desde cero sin duplicarlo, asi que ahi directamente cerramos con nota."""
+    falla por lo que sea, no le mostramos un error al usuario: cae una sola
+    vez a intentarlo sin grounding, y si eso anda, lo dejamos desactivado
+    el resto de la sesion para no repetir el mismo fallo en cada mensaje."""
     global _grounding_unavailable
 
     if allow_grounding:
@@ -714,17 +732,7 @@ def _stream_with_retries(contents, allow_grounding: bool, memoria: str = ""):
         except Exception:
             _grounding_unavailable = True
 
-    last_error = None
-    for attempt in range(API_MAX_RETRIES):
-        try:
-            return _try_stream(contents, use_grounding=False, memoria=memoria)
-        except Exception as e:
-            last_error = e
-            if not _is_transient_error(e):
-                raise
-            if attempt < API_MAX_RETRIES - 1:
-                time.sleep(API_RETRY_BASE_DELAY * (2 ** attempt))
-    raise last_error
+    return _try_stream(contents, use_grounding=False, memoria=memoria)
 
 
 @app.route("/health")
@@ -882,10 +890,10 @@ def chat():
         chunk_stream = _stream_with_retries(contents, allow_grounding, memoria_texto)
     except Exception as e:
         import traceback
-        print(f"[chat] fallo la llamada a Gemini: {type(e).__name__}: {e}", flush=True)
+        print(f"[chat] fallo la llamada al modelo: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         return jsonify({
-            "error": "Gemini no respondio despues de varios intentos. Proba de nuevo en un momento."
+            "error": "El mayordomo no pudo responder en este momento. Probá de nuevo en unos segundos."
         }), 502
 
     def generate():
