@@ -150,12 +150,6 @@ MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
 MAX_TURNS_SAFETY_NET = int(os.environ.get("MAX_TURNS_SAFETY_NET", "2000"))
 SESSION_IDLE_TTL_SECONDS = int(os.environ.get("SESSION_IDLE_TTL_SECONDS", str(60 * 60 * 6)))  # 6h
 
-# reintentos automaticos ante errores transitorios de la API (503, timeouts,
-# rate limits momentaneos), para que el chat casi nunca le muestre un error
-# al usuario si la causa es pasajera.
-API_MAX_RETRIES = int(os.environ.get("API_MAX_RETRIES", "3"))
-API_RETRY_BASE_DELAY = float(os.environ.get("API_RETRY_BASE_DELAY", "0.8"))
-
 # presupuesto de "pensamiento" interno de gemini-2.5-flash antes de escribir
 # la respuesta (mejora razonamiento en preguntas con logica o varios pasos).
 # -1 = el modelo decide cuanto pensar segun la dificultad (recomendado).
@@ -649,8 +643,8 @@ def _procesar_bloque_pdf(reply: str, base_url: str):
 # "ve"/"lee" con su propio razonamiento). Los archivos de texto/codigo se
 # insertan como bloque de codigo dentro del mensaje: es mas confiable que
 # tratarlos como blob generico, y el modelo los analiza igual de bien.
-ADJUNTOS_MAX_ARCHIVOS = int(os.environ.get("ADJUNTOS_MAX_ARCHIVOS", "5"))
-ADJUNTOS_MAX_MB_POR_ARCHIVO = int(os.environ.get("ADJUNTOS_MAX_MB_POR_ARCHIVO", "15"))
+ADJUNTOS_MAX_ARCHIVOS = int(os.environ.get("ADJUNTOS_MAX_ARCHIVOS", "3"))
+ADJUNTOS_MAX_MB_POR_ARCHIVO = int(os.environ.get("ADJUNTOS_MAX_MB_POR_ARCHIVO", "8"))
 ADJUNTOS_MAX_BYTES_POR_ARCHIVO = ADJUNTOS_MAX_MB_POR_ARCHIVO * 1024 * 1024
 ADJUNTOS_MAX_TEXTO_CHARS = int(os.environ.get("ADJUNTOS_MAX_TEXTO_CHARS", "20000"))
 
@@ -769,18 +763,6 @@ def _is_rate_limited(ip: str) -> bool:
         _rate_hits[ip] = hits
         return False
 
-
-def _is_transient_error(e: Exception) -> bool:
-    """Decide si vale la pena reintentar. Errores de servidor (5xx) y rate
-    limit (429) son transitorios; errores de cliente (400 pedido invalido,
-    401/403 key mala, 404 modelo inexistente) van a fallar siempre igual,
-    asi que ahi no tiene sentido esperar y reintentar 3 veces en vano."""
-    code = getattr(e, "code", None)
-    if isinstance(code, int):
-        return code == 429 or code >= 500
-    # errores de red/timeout sin codigo HTTP (ConnectionError, Timeout, etc.):
-    # los tratamos como transitorios, tienen mas chance de resolverse solos.
-    return True
 
 
 # --- Grounding: contador de consultas de busqueda usadas hoy ---
