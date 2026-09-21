@@ -21,6 +21,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@latest/build/styles/atom-one-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@latest/build/highlight.min.js" defer></script>
 <style>
 
   :root{
@@ -342,6 +344,15 @@
   .code-block code{
     font-family:"Share Tech Mono", monospace; font-size:12.5px; line-height:1.55;
     color:#9be8ff; white-space:pre;
+  }
+  /* el tema de highlight.js trae su propio fondo/tipografia; los pisamos
+     para que solo se vean los colores de sintaxis, integrados con el
+     resto de la terminal en vez de un parche pegado encima. */
+  .code-block .hljs{
+    background:transparent !important;
+    padding:0 !important;
+    font-family:"Share Tech Mono", monospace !important;
+    font-size:12.5px !important;
   }
 
   /* ---------- link de descarga de pdf ---------- */
@@ -999,6 +1010,9 @@
       cursor.remove();
       const finalText = full.trim() || 'uy, no puedo responder eso tal cual está planteado.';
       letter.innerHTML = renderMarkdown(finalText);
+      letter.querySelectorAll('pre.code-block code').forEach(bloque => {
+        try{ hljs.highlightElement(bloque); }catch(_){}
+      });
       addCopyButton(letter, () => finalText);
       scrollDown();
       persistLog();
