@@ -618,7 +618,7 @@
         <span id="count">0 / 4000 palabras</span>
         <span>
           <button type="button" id="export">exportar charla</button>
-          <button type="button" id="reset">cerrar sesion y reiniciar</button>
+          <button type="button" id="reset">reiniciar charla</button>
         </span>
       </div>
     </div>
@@ -657,13 +657,55 @@
   const MAX_WORDS = 4000;
   const WELCOME_HTML = '<p class="welcome">sesion iniciada. soy el mayordomo — dime en qué te ayudo, o simplemente charlemos.</p>';
 
-  // ---------- persistencia de sesion (sobrevive a un F5 accidental) ----------
+  // ---------- persistencia de sesion ----------
+  // La charla ahora vive de verdad en el servidor (por visitante), asi que
+  // sobrevive a un F5, a una pestaña nueva, y si hay Supabase configurado,
+  // a un redeploy. El sessionStorage es solo un atajo rapido para no
+  // esperar una llamada de red en el caso mas comun (recargaste la misma
+  // pestaña); si no hay nada ahi (pestaña nueva, otro dia), le preguntamos
+  // al servidor que se acuerda de verdad.
   try{
     const saved = sessionStorage.getItem('mayordomo_log');
-    if (saved) log.innerHTML = saved;
-  }catch(_){}
+    if (saved){
+      log.innerHTML = saved;
+    } else {
+      restaurarHistorialDelServidor();
+    }
+  }catch(_){
+    restaurarHistorialDelServidor();
+  }
   function persistLog(){
     try{ sessionStorage.setItem('mayordomo_log', log.innerHTML); }catch(_){}
+  }
+
+  async function restaurarHistorialDelServidor(){
+    try{
+      const res = await fetch('/historial', { cache:'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const turnos = data.turnos || [];
+      if (!turnos.length) return; // nada guardado: se queda el mensaje de bienvenida de siempre
+
+      log.innerHTML = '';
+      turnos.forEach(turno => {
+        if (turno.role === 'user'){
+          addUserNote(turno.text || '');
+          return;
+        }
+        const { letter, cursor } = addAssistantLetter();
+        cursor.remove();
+        const texto = turno.text || '';
+        letter.innerHTML = renderMarkdown(texto);
+        letter.querySelectorAll('pre.code-block code').forEach(bloque => {
+          try{ hljs.highlightElement(bloque); }catch(_){}
+        });
+        addCopyButton(letter, () => texto);
+      });
+      scrollDown();
+      persistLog();
+    }catch(_){
+      // si falla la llamada, no pasa nada: se queda el mensaje de bienvenida
+    }
   }
 
   // ---------- indicador de conexion ----------

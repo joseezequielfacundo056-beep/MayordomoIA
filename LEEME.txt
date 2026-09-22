@@ -38,6 +38,28 @@ Para probar en tu compu mientras tanto
 Segui usando start.bat como hasta ahora (con tu .env local).
 Eso no cambia.
 
+Novedades: la charla en si tambien persiste (no solo la memoria)
+------------------------------------------------------------------
+- Antes: aunque la charla se veia igual al recargar la pagina (un
+  truco del navegador guardando el HTML), el SERVIDOR en realidad
+  ya se habia olvidado de todo en cada visita a "/". Si mandabas un
+  mensaje despues de refrescar, el modelo no tenia ni idea de lo
+  que se veia arriba en pantalla.
+- Ahora el historial real vive atado al mismo "visitante" que la
+  memoria (la cookie de siempre), no a la sesion de Flask que se
+  reiniciaba cada vez. Es continuidad de verdad: sobrevive a un F5,
+  a abrir una pestaña nueva, a que la instancia se duerma, y si
+  tenes Supabase configurado, tambien a un redeploy.
+- Si NO tenes Supabase, el historial sigue viviendo en memoria del
+  proceso como antes (se pierde en un redeploy, pero no en un F5
+  normal ni al abrir otra pestaña).
+- Si ya habias corrido supabase_setup.sql antes de esta version,
+  falta agregar una columna nueva: mira el comentario dentro del
+  archivo (es una sola linea de SQL para correr una vez).
+- Nuevo boton "reiniciar charla" (antes decia "cerrar sesion y
+  reiniciar" — ese nombre era confuso: no cerraba tu sesion de
+  acceso, solo la charla. Ahora el nombre dice lo que hace).
+
 Novedades: memoria que sobrevive a los redeploys (Supabase)
 ------------------------------------------------------------------
 - Hasta ahora la memoria vivia en archivos locales, que Render borra

@@ -702,44 +702,89 @@ app = Flask(__name__)
 # se regenera cada vez que arranca el server: alcanza de sobra para una demo de un dia
 app.secret_key = secrets.token_hex(16)
 
-# --- Estado de las conversaciones, guardado en el servidor (no en la cookie) ---
-# La cookie de sesion solo guarda un id corto; el historial real vive aca.
-# Esto evita el limite de ~4KB de las cookies, que con charlas largas se rompia.
+# --- Historial de conversacion: sobrevive a redeploys si hay Supabase ---
+# Antes esto vivia atado a la cookie de sesion de Flask, que se borraba en
+# cada visita a "/" (a proposito, para que la demo arrancara "fresca" cada
+# vez). El problema: aunque el navegador mostraba la charla anterior
+# (restaurada del sessionStorage del propio navegador), el SERVIDOR ya se
+# habia olvidado de todo - si mandabas un mensaje nuevo, el modelo no
+# tenia ni idea de lo que se veia en pantalla arriba. Ahora el historial
+# se guarda por visitante (mismo vid que la memoria), asi que es de
+# verdad: sobrevive a un F5, a que se duerma la instancia, y si hay
+# Supabase configurado, tambien a un redeploy.
 _lock = threading.Lock()
 _conversations: dict[str, dict] = {}
-# _conversations[sid] = {"history": [...], "last_seen": ts}
+# _conversations[vid] = {"history": [...], "last_seen": ts}  (solo si no hay Supabase)
 
 
 def _purge_stale_sessions():
     cutoff = time.time() - SESSION_IDLE_TTL_SECONDS
-    stale = [sid for sid, data in _conversations.items() if data["last_seen"] < cutoff]
-    for sid in stale:
-        _conversations.pop(sid, None)
+    stale = [vid for vid, data in _conversations.items() if data["last_seen"] < cutoff]
+    for vid in stale:
+        _conversations.pop(vid, None)
 
 
-def _get_session_id() -> str:
-    sid = session.get("sid")
-    if not sid:
-        sid = uuid.uuid4().hex
-        session["sid"] = sid
-    return sid
+def _get_history(vid: str) -> list:
+    if _supabase_activo():
+        try:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"visitor_id": f"eq.{vid}", "select": "historial"},
+                headers=_supabase_headers(),
+                timeout=SUPABASE_TIMEOUT,
+            )
+            resp.raise_for_status()
+            filas = resp.json()
+            if filas and filas[0].get("historial"):
+                return filas[0]["historial"]
+            return []
+        except Exception:
+            return []  # supabase con problemas: arrancamos sin historial esta vez, no rompe el chat
 
-
-def _get_history(sid: str) -> list:
     with _lock:
         _purge_stale_sessions()
-        entry = _conversations.setdefault(sid, {"history": [], "last_seen": time.time()})
+        entry = _conversations.setdefault(vid, {"history": [], "last_seen": time.time()})
         entry["last_seen"] = time.time()
         return entry["history"]
 
 
-def _save_history(sid: str, history: list):
+def _save_history(vid: str, history: list):
+    history = history[-MAX_TURNS_SAFETY_NET:]  # red de seguridad, no limite normal
+
+    if _supabase_activo():
+        try:
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"on_conflict": "visitor_id"},
+                headers=_supabase_headers({"Prefer": "resolution=merge-duplicates"}),
+                json={"visitor_id": vid, "historial": history},
+                timeout=SUPABASE_TIMEOUT,
+            )
+        except Exception:
+            pass
+        return
+
     with _lock:
-        entry = _conversations.setdefault(sid, {"history": [], "last_seen": time.time()})
-        # solo se recorta si se pasa la red de seguridad (miles de mensajes),
-        # nunca como limite normal de conversacion
-        entry["history"] = history[-MAX_TURNS_SAFETY_NET:]
+        entry = _conversations.setdefault(vid, {"history": [], "last_seen": time.time()})
+        entry["history"] = history
         entry["last_seen"] = time.time()
+
+
+def _borrar_historial(vid: str):
+    if _supabase_activo():
+        try:
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                params={"on_conflict": "visitor_id"},
+                headers=_supabase_headers({"Prefer": "resolution=merge-duplicates"}),
+                json={"visitor_id": vid, "historial": []},
+                timeout=SUPABASE_TIMEOUT,
+            )
+        except Exception:
+            pass
+        return
+    with _lock:
+        _conversations.pop(vid, None)
 
 
 def _count_words(text: str) -> int:
@@ -1091,9 +1136,8 @@ def chat():
             "error": f"mensaje muy largo: {word_count} palabras (max {MAX_MESSAGE_WORDS})"
         }), 400
 
-    sid = _get_session_id()
-    history = _get_history(sid)
     vid = _get_vid()
+    history = _get_history(vid)
     memoria_activa = _memoria_activa()
     memoria_texto = _leer_memoria(vid) if memoria_activa else ""
 
@@ -1171,7 +1215,7 @@ def chat():
 
             history.append({"role": "user", "text": mensaje_para_historial})
             history.append({"role": "model", "text": reply})
-            _save_history(sid, history)
+            _save_history(vid, history)
 
             if memoria_activa and reply:
                 _extraer_memoria_async(vid, user_message, reply)
@@ -1228,13 +1272,18 @@ def memoria_borrar():
     return resp
 
 
+@app.route("/historial", methods=["GET"])
+def historial_ver():
+    vid = _get_vid()
+    resp = jsonify({"turnos": _get_history(vid)})
+    _set_vid_cookie(resp, vid)
+    return resp
+
+
 @app.route("/reset", methods=["POST"])
 def reset():
-    sid = session.get("sid")
-    if sid:
-        with _lock:
-            _conversations.pop(sid, None)
-    session.clear()
+    vid = _get_vid()
+    _borrar_historial(vid)
     return jsonify({"ok": True})
 
 

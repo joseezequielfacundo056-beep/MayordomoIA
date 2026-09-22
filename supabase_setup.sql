@@ -4,8 +4,13 @@
 create table if not exists memoria_mayordomo (
   visitor_id text primary key,
   texto text not null default '',
+  historial jsonb not null default '[]'::jsonb,
   actualizado timestamptz not null default now()
 );
+
+-- Si ya creaste la tabla antes de esta version (sin la columna historial),
+-- corre esta linea aparte para agregarla sin perder lo que ya tenias:
+-- alter table memoria_mayordomo add column if not exists historial jsonb not null default '[]'::jsonb;
 
 -- mantiene "actualizado" al dia solo (no es obligatorio, pero ayuda si
 -- alguna vez queres ver ultima actividad por persona)
