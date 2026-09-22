@@ -1169,6 +1169,7 @@ def chat():
     def generate():
         full_text_parts = []
         last_grounding_metadata = None
+        cliente_desconectado = False
         try:
             for chunk in chunk_stream:
                 piece = getattr(chunk, "text", None)
@@ -1178,6 +1179,15 @@ def chat():
                 gm = _extract_grounding_metadata(chunk)
                 if gm is not None:
                     last_grounding_metadata = gm
+        except GeneratorExit:
+            # el cliente corto la conexion (cancelo la respuesta, cerro la
+            # pestaña, se fue la señal). Python NO permite hacer yield de
+            # nuevo despues de esto - ni aca ni en el finally - asi que
+            # nos limitamos a marcar la bandera y dejar que el finally
+            # guarde lo que se alcanzo a generar, sin intentar mandar nada
+            # mas al cliente.
+            cliente_desconectado = True
+            raise
         except Exception as e:
             # se corto la conexion con el modelo a mitad de la transmision:
             # ya le mostramos algo de texto al usuario, asi que no podemos
@@ -1190,16 +1200,17 @@ def chat():
             if last_grounding_metadata is not None:
                 queries = getattr(last_grounding_metadata, "web_search_queries", None) or []
                 _register_grounding_queries(len(queries))
-                sources = _format_sources(last_grounding_metadata)
-                if sources:
-                    footer = "\n\n" + sources
-                    full_text_parts.append(footer)
-                    yield footer
+                if not cliente_desconectado:
+                    sources = _format_sources(last_grounding_metadata)
+                    if sources:
+                        footer = "\n\n" + sources
+                        full_text_parts.append(footer)
+                        yield footer
 
             reply_bruta = "".join(full_text_parts).strip()
 
             extra_pdf, hubo_pdf = _procesar_bloque_pdf(reply_bruta, base_url)
-            if hubo_pdf:
+            if hubo_pdf and not cliente_desconectado:
                 yield extra_pdf
 
             reply = _PDF_BLOCK_RE.sub("", reply_bruta).strip()
@@ -1211,7 +1222,8 @@ def chat():
                     "Uy, no puedo responder eso tal cual esta planteado. "
                     "Prueba reformularlo y lo intentamos de nuevo."
                 )
-                yield reply
+                if not cliente_desconectado:
+                    yield reply
 
             history.append({"role": "user", "text": mensaje_para_historial})
             history.append({"role": "model", "text": reply})

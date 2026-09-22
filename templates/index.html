@@ -496,6 +496,25 @@
   button[type="submit"]:hover:not(:disabled){ box-shadow:0 0 18px rgba(41,246,255,.6); }
   button[type="submit"]:active:not(:disabled){ transform:scale(.9); }
   button[type="submit"]:disabled{ opacity:.4; cursor:default; }
+
+  #cancelBtn{
+    display:none;
+    flex:0 0 auto;
+    width:44px; height:44px;
+    border-radius:50%;
+    border:1px solid var(--danger);
+    cursor:pointer;
+    background:radial-gradient(circle at 34% 30%, #2a0f12, #170505 70%);
+    color:var(--danger);
+    font-size:16px;
+    align-items:center; justify-content:center;
+    box-shadow:0 0 10px rgba(255,77,94,.35);
+    transition:transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  #cancelBtn.visible{ display:flex; }
+  #cancelBtn:hover{ box-shadow:0 0 18px rgba(255,77,94,.6); }
+  #cancelBtn:active{ transform:scale(.9); }
+
   button[type="submit"]:focus-visible,
   #msg:focus-visible,
   #reset:focus-visible{ outline:1px solid var(--magenta); outline-offset:2px; }
@@ -613,6 +632,7 @@
         <input type="file" id="fileInput" multiple accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv,.html,.css,.java,.c,.cpp,.go,.rb,.php,.sql,.yaml,.yml,.xml,.sh" hidden>
         <textarea id="msg" rows="1" placeholder="escriba su mensaje…" maxlength="40000"></textarea>
         <button type="submit" id="send" aria-label="Enviar">&gt;</button>
+        <button type="button" id="cancelBtn" aria-label="Cancelar respuesta" title="Cancelar respuesta">✕</button>
       </form>
       <div class="tray-foot">
         <span id="count">0 / 4000 palabras</span>
@@ -640,6 +660,7 @@
   const form = document.getElementById('form');
   const msg = document.getElementById('msg');
   const send = document.getElementById('send');
+  const cancelBtn = document.getElementById('cancelBtn');
   const count = document.getElementById('count');
   const resetBtn = document.getElementById('reset');
   const exportBtn = document.getElementById('export');
@@ -967,6 +988,7 @@
   }
 
   let busy = false;
+  let currentController = null;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1002,6 +1024,7 @@
     busy = true;
     send.disabled = true;
     msg.disabled = true;
+    cancelBtn.classList.add('visible');
     setOrb('thinking');
 
     // Render free tier duerme la instancia tras inactividad: si el primer
@@ -1013,6 +1036,7 @@
     const { letter, cursor } = addAssistantLetter();
     let full = '';
     let started = false;
+    currentController = new AbortController();
 
     try{
       const formData = new FormData();
@@ -1022,6 +1046,7 @@
       const res = await fetch('/chat', {
         method:'POST',
         body: formData,
+        signal: currentController.signal,
       });
       clearTimeout(wakeupTimer);
       statusText.textContent = 'en linea';
@@ -1062,16 +1087,45 @@
     } catch(err){
       clearTimeout(wakeupTimer);
       cursor.remove();
-      letter.parentElement.remove();
-      addNotice('se perdió la conexión con el mayordomo — prueba de nuevo');
+      if (err && err.name === 'AbortError'){
+        // cancelado a proposito: si ya habia algo escrito, lo dejamos tal
+        // cual (rendereado) en vez de tirarlo; si no habia nada, sacamos
+        // la burbuja vacia.
+        if (full.trim()){
+          const finalText = full.trim();
+          letter.innerHTML = renderMarkdown(finalText);
+          letter.querySelectorAll('pre.code-block code').forEach(bloque => {
+            try{ hljs.highlightElement(bloque); }catch(_){}
+          });
+          addCopyButton(letter, () => finalText);
+          const aviso = document.createElement('span');
+          aviso.className = 'sig';
+          aviso.textContent = ' (cancelado)';
+          letter.appendChild(aviso);
+          persistLog();
+        } else {
+          letter.parentElement.remove();
+          addNotice('respuesta cancelada');
+        }
+      } else {
+        letter.parentElement.remove();
+        addNotice('se perdió la conexión con el mayordomo — prueba de nuevo');
+      }
     } finally {
       busy = false;
       send.disabled = false;
       msg.disabled = false;
+      cancelBtn.classList.remove('visible');
+      currentController = null;
       setOrb(null);
       msg.focus();
     }
   });
+
+  cancelBtn.addEventListener('click', () => {
+    if (currentController) currentController.abort();
+  });
+
 
   exportBtn.addEventListener('click', () => {
     const rows = log.querySelectorAll('.row');
